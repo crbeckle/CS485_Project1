@@ -19,15 +19,18 @@ const int RIGHT_FACING_IR_PIN = 1;
 const int CENTER_IR_PIN = 2;
 const int LEFT_FACING_IR_PIN = 3;
 const int LEFT_FRONT_FACING_IR_PIN = 4;
+const int HIGH_BUMP_SENSOR_PIN = 12;
 
 int rffIR = 0;
 int rfIR = 0;
 int cIR = 0;
 int lfIR = 0;
 int lffIR = 0;
+int hBS = 0;
 
 // Global variable for tracking where the blob was last seen
 boolean onRight;
+boolean reachedGoal;
 
 // Global variables to count wheel watcher tics
 int rightWW, leftWW;
@@ -254,6 +257,7 @@ void setup()
   
   // Default value = turn right if the blob is not on screen
   onRight = true;
+  reachedGoal = false;
     
   // Attach the wheel watchers
   attachInterrupt(INTERRUPT_1, _updateLeftEncoder, FALLING); 
@@ -318,23 +322,42 @@ void loop()
         
   cmucam2_get("TC 200 240 0 40 0 40", 'T', packet, false);
   
-  // Read incoming value from packet 6 (packet 6 = can I see ANY pixels I want?)
-  if(packet[6] > 0){
-    // If I can, drive straight
-    drive(30,0);
-  }
-
-  // Read values from IR sensors
-  rffIR = analogRead(RIGHT_FRONT_FACING_IR_PIN);
-  rfIR = analogRead(RIGHT_FACING_IR_PIN);
-  cIR = analogRead(CENTER_IR_PIN);
-  lfIR = analogRead(LEFT_FACING_IR_PIN);
-  lffIR = analogRead(LEFT_FRONT_FACING_IR_PIN);
+  if (!reachedGoal) {
   
-  // Here is some debugging code which will print out the packets
-  // received.
-  debug_printer();
-   
+    // Read incoming value from packet 6 (packet 6 = can I see ANY pixels I want?)
+    if(packet[6] > 0){
+      // If I can, drive straight
+      drive(30,0);
+    }
+    else
+    {
+      if (onRight) {
+        drive(0,15);
+      }
+      else {
+        drive(0,-15);
+      }
+    }
+
+    // Read values from IR sensors
+    rffIR = analogRead(RIGHT_FRONT_FACING_IR_PIN);
+    rfIR = analogRead(RIGHT_FACING_IR_PIN);
+    cIR = analogRead(CENTER_IR_PIN);
+    lfIR = analogRead(LEFT_FACING_IR_PIN);
+    lffIR = analogRead(LEFT_FRONT_FACING_IR_PIN);
+    hBS = digitalRead(HIGH_BUMP_SENSOR_PIN);
+  
+    if (hBS == 1) {
+      reachedGoal = true;
+    }
+  
+    // Here is some debugging code which will print out the packets
+    // received.
+    debug_printer();
+  }
+  else {
+    drive(0,0);
+  }
 }
 
 
