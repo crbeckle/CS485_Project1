@@ -20,6 +20,7 @@ const int CENTER_IR_PIN = 2;
 const int LEFT_FACING_IR_PIN = 3;
 const int LEFT_FRONT_FACING_IR_PIN = 4;
 const int HIGH_BUMP_SENSOR_PIN = 12;
+const int LOW_BUMP_SENSOR_PIN = 13;
 
 int rffIR = 0;
 int rfIR = 0;
@@ -27,10 +28,17 @@ int cIR = 0;
 int lfIR = 0;
 int lffIR = 0;
 int hBS = 0;
+int lBS = 0;
 
-// Global variable for tracking where the blob was last seen
+// Global variable for: 
+//    1) Tracking where the blob was last seen
+//    2) Tracking if the goal has been reached
+//    3) Tracking which mode we're in
 boolean onRight;
 boolean reachedGoal;
+boolean wallFollow;
+boolean frontStuck;
+int mode;
 
 // Global variables to count wheel watcher tics
 int rightWW, leftWW;
@@ -51,8 +59,8 @@ void print_packet(unsigned char * packet)
 {
   for(int i = 0; i < 8; i++)
   {
-     Serial.print( (int)packet[i] );
-     Serial.print(" "); 
+    Serial.print( (int)packet[i] );
+    Serial.print(" "); 
   }
   Serial.println();
 }
@@ -87,7 +95,7 @@ boolean cmucam2_set(char* cmd, boolean verbose=false)
   while( cmucam.available() > 0 ) 
   {
     char inbyte = cmucam.read();
-    
+
     if(inbyte == ':')
       ack = true;  
 
@@ -143,7 +151,7 @@ boolean cmucam2_get(char* cmd, char packet, unsigned char *rtrn, boolean verbose
       Serial.print((char)cmucam.read());    
     }
     Serial.println();
-    
+
     return true;
   }
 
@@ -187,8 +195,8 @@ void _updateLeftEncoder() {
 }
 
 /*********************************************************************
-*                          My Helper Functions                       *
-*********************************************************************/
+ *                          My Helper Functions                       *
+ *********************************************************************/
 
 // Set the wheels to drive in the given direction.
 // fwd: negative value = drive backwards
@@ -197,25 +205,127 @@ void _updateLeftEncoder() {
 //       positive value = drive right
 // Both input parameters are values between -90 and 90
 void drive(int fwd, int side) {
-  
+
   // Left Wheel:
   //    Values above 90 are forward, so fwd is added to
   //    the base (stopped) value of 90. Going right means
   //    increasing speed of the left wheel while decreasing
   //    speed of the right, so side is also added to the 
   //    base value.
-  leftWheel.write(90 + fwd + side);
+  leftWheel.write(85 + fwd + side);
   // Right Wheel:
   //    Opposite of left wheel, so fwd is subtracted from
   //    the base (stopped) value of 90. Going right means
   //    decreasing speed of the right wheel while increasing
   //    speed of the left, so side is also added to the base
   //    value.
-  rightWheel.write(90 - fwd + side);
+  rightWheel.write(85 - fwd + side);
+}
+
+// Mode 0: Use the CMUCam2 to blob track an orange cone
+void track_cone(unsigned char *packet, int hBS) {
+  if (!reachedGoal) {
+
+    // Read incoming value from packet 6 (packet 6 = can I see ANY pixels I want?)
+    if(packet[6] > 0){
+      // If I can, drive straight
+      drive(30,0);
+      if (packet[1] <= 80)
+        onRight = true;
+      else
+        onRight = false;
+    }
+    else
+    {
+      if (onRight) {
+        drive(0,15);
+      }
+      else {
+        drive(0,-15);
+      }
+    }
+
+    if (hBS == 1) {
+      reachedGoal = true;
+    }
+  }
+  else {
+    drive(0,0);
+  }
+}
+
+// Mode 1: Right follow a wall
+void follow_wall(int rffIR, int rfIR, int cIR, int lfIR, int lffIR, int hBS) {
+
+  /* ALPHA HEIRARCHICAL METHOD 09-10-2014 */
+  if (lffIR <= 150) {
+    if (rfIR <= 150)
+      drive(5,40);
+    else if (rfIR > 150 && rfIR <= 300)
+      drive(25,15);
+    else if (rfIR > 300)
+      drive(25,0);
+  }
+  else if (lffIR > 150 && lffIR <= 250) {
+    drive(25,10);
+  }
+  else if (lffIR > 250 && lffIR <= 300) {
+    drive(25,0);
+  }
+  else if (lffIR > 300 && lffIR <= 400) {
+    drive(25,-15);
+  }
+  else if (lffIR > 400 && lffIR <= 475) {
+    drive(25,-20);
+  }
+  else if (lffIR > 475) {
+    drive(0,-20);
+  }
+
+  /* ORIGINAL METHOD
+   if (lffIR > 300 && rfIR < 300) {
+   drive(0,-15);
+   }
+   else if (lffIR < 150 && rfIR < 150) {
+   drive(0,20);
+   }
+   else if (rfIR > 300 && rfIR < 450 && lffIR < 300) {
+   drive(30,0);
+   }
+   else if (rfIR > 450) {
+   drive(0,-15);
+   } 
+   else {
+   drive(30,0);
+   }
+   */
+}
+
+void get_unstuck() {
+  int currentTics = rightWW;
+  while ((currentTics - rightWW) < 30) {
+    drive(-10,0);
+    SoftwareServo::refresh();
+    delay(30);
+  }
+  currentTics = rightWW;
+  while((rightWW - currentTics) < 30) {
+    drive(5,-20);
+    SoftwareServo::refresh();
+    delay(30);
+  }
+  currentTics = rightWW;
+  while((rightWW - currentTics) < 10) {
+    drive(10,0);
+    SoftwareServo::refresh();
+    delay(30);
+  } 
+  frontStuck = false;
 }
 
 // Prints out the values of all the sensors and CMU Cam data
-void debug_printer() {
+void debug_printer(unsigned char *packet, int rffIR, int rfIR, int cIR, int lfIR, int lffIR) {
+
   Serial.print(packet[0], DEC);    // MEAN X
   Serial.print(" ");
   Serial.print(packet[1], DEC);    // MEAN Y
@@ -248,25 +358,29 @@ void debug_printer() {
 }
 
 /*********************************************************************
-*                             SETUP & LOOP                           *
-*********************************************************************/
+ *                             SETUP & LOOP                           *
+ *********************************************************************/
 
 void setup()
 {
   Serial.begin(115200);
-  
+
+  /* SETUP OUR GLOBAL VARIABLES */
   // Default value = turn right if the blob is not on screen
   onRight = true;
   reachedGoal = false;
-    
+  wallFollow = false;
+  frontStuck = false;
+  mode = 1;
+
   // Attach the wheel watchers
   attachInterrupt(INTERRUPT_1, _updateLeftEncoder, FALLING); 
   attachInterrupt(INTERRUPT_2, _updateRightEncoder, FALLING);  
-  
+
   // Attach servos
   rightWheel.attach(10);
   leftWheel.attach(11);
-  
+
   // CMU cam 2 init  
   cmucam.begin(9600);
   cmucam.print("RS"); 
@@ -284,10 +398,10 @@ void setup()
 
   // Turn OFF Auto Gain
   while(!cmucam2_set("CR 19 33", true));
-	
+
   // Turn OFF Auto White Balance (this is unnecessary since it's the default)
   while(!cmucam2_set("CR 18 40", true));
-	
+
   // Turn ON Poll Mode
   while(!cmucam2_set("PM 1", true));
 
@@ -313,51 +427,59 @@ void loop()
   // num pixels in the rectangle which belong to the blob, 
   // and "confidence" (basically a measure how much of the
   // rectangle is filled by pixels belonging to the blob).
-        
+
   // The camera is rotated 90 degrees, so use the Y value.
   // Low Y values indicate the blob is to the left of the
   // view, high Y values indicate the blob is to the right of the view.
   // You want a blob with a moderate confidence (perhaps over 20?)
   // Else it's probably just noise.
-        
+
   cmucam2_get("TC 200 240 0 40 0 40", 'T', packet, false);
-  
-  if (!reachedGoal) {
-  
-    // Read incoming value from packet 6 (packet 6 = can I see ANY pixels I want?)
-    if(packet[6] > 0){
-      // If I can, drive straight
-      drive(30,0);
-    }
-    else
-    {
-      if (onRight) {
-        drive(0,15);
+
+  // Read values from IR sensors
+  rffIR = analogRead(RIGHT_FRONT_FACING_IR_PIN);
+  rfIR = analogRead(RIGHT_FACING_IR_PIN);
+  cIR = analogRead(CENTER_IR_PIN);
+  lfIR = analogRead(LEFT_FACING_IR_PIN);
+  lffIR = analogRead(LEFT_FRONT_FACING_IR_PIN);
+  hBS = digitalRead(HIGH_BUMP_SENSOR_PIN);
+  lBS = digitalRead(LOW_BUMP_SENSOR_PIN);
+
+  switch (mode) {
+  case 0: // Track Cone
+    track_cone(packet, hBS);
+    break;
+  case 1: // Follow Wall
+    if (!wallFollow) {
+      if (lffIR > 300) {
+        wallFollow = true;
       }
       else {
-        drive(0,-15);
+        drive(30,0);
       }
     }
-
-    // Read values from IR sensors
-    rffIR = analogRead(RIGHT_FRONT_FACING_IR_PIN);
-    rfIR = analogRead(RIGHT_FACING_IR_PIN);
-    cIR = analogRead(CENTER_IR_PIN);
-    lfIR = analogRead(LEFT_FACING_IR_PIN);
-    lffIR = analogRead(LEFT_FRONT_FACING_IR_PIN);
-    hBS = digitalRead(HIGH_BUMP_SENSOR_PIN);
-  
-    if (hBS == 1) {
-      reachedGoal = true;
+    else { 
+      if (cIR > 450 || hBS == 1 || lBS == 1 || lfIR > 450 || rffIR > 450)
+        frontStuck = true;
+      if (frontStuck)
+        get_unstuck();
+      else
+        follow_wall(rffIR,rfIR,cIR,lfIR,lffIR,hBS); 
     }
-  
-    // Here is some debugging code which will print out the packets
-    // received.
-    debug_printer();
+    break;
+  case 2: // Bug 0.5
+    
+    break;
+  default:
+    break;
   }
-  else {
-    drive(0,0);
-  }
+  // Here is some debugging code which will print out the packets
+  // received.
+  //debug_printer(packet, rffIR, rfIR, cIR, lfIR, lffIR);
 }
+
+
+
+
 
 
